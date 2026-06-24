@@ -1,5 +1,4 @@
-# Documentation (committed only with explicit permission)
-# NOTE: *.md is ignored - use git add -f README.md to commit
+
 .hermes/
 
 # Build artifacts

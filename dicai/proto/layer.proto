@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package dicai;
+
+option go_package = "github.com/dicai/dicai-admin/pkg/proto";
+option rust_package = "dicai_proto";
+
+// LayerService handles distributed layer computation
+service LayerService {
+  // ComputeLayer processes a single layer forward pass
+  rpc ComputeLayer(LayerRequest) returns (LayerResponse);
+  
+  // ComputeLayerBatch processes multiple layers
+  rpc ComputeLayerBatch(LayerBatchRequest) returns (LayerBatchResponse);
+  
+  // StreamCompute processes layers in a streaming fashion
+  rpc StreamCompute(stream LayerRequest) returns (stream LayerResponse);
+  
+  // HealthCheck returns provider health status
+  rpc HealthCheck(HealthRequest) returns (HealthResponse);
+}
+
+message LayerRequest {
+  string model_id = 1;
+  int32 layer_index = 2;
+  bytes input_tensor = 3;
+  map<string, string> metadata = 4;
+}
+
+message LayerResponse {
+  bytes output_tensor = 1;
+  int32 layer_index = 2;
+  string status = 3;  // "ok", "error"
+  string error_message = 4;
+  int64 compute_time_ms = 5;
+}
+
+message LayerBatchRequest {
+  string model_id = 1;
+  repeated int32 layer_indices = 2;
+  bytes input_tensor = 3;
+  map<string, string> metadata = 4;
+}
+
+message LayerBatchResponse {
+  bytes output_tensor = 1;
+  repeated int32 processed_layers = 2;
+  string status = 3;
+  string error_message = 4;
+  int64 total_compute_time_ms = 5;
+}
+
+message HealthRequest {
+  string provider_id = 1;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  string backend = 2;
+  int32 memory_available_gb = 3;
+  int32 current_load = 4;
+  repeated int32 assigned_layers = 5;
+}

@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  admin:
+    build:
+      context: ./admin
+      dockerfile: ../docker/Dockerfile.admin
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    environment:
+      - DICAI_ADMIN_PORT=8080
+      - DICAI_METRICS_PORT=9090
+      - DICAI_LOG_LEVEL=info
+    volumes:
+      - admin-data:/data
+    networks:
+      - dicai-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  provider:
+    build:
+      context: ./provider
+      dockerfile: ../docker/Dockerfile.provider
+    environment:
+      - DICAI_ADMIN_URL=http://admin:8080
+      - DICAI_PROVIDER_ID=provider
+      - DICAI_MEMORY=16
+      - DICAI_BACKEND=cpu
+      - DICAI_PORT=50051
+    ports:
+      - "50051-50065:50051"
+    volumes:
+      - provider-cache:/cache
+      - provider-models:/models
+    networks:
+      - dicai-network
+    depends_on:
+      admin:
+        condition: service_healthy
+    deploy:
+      replicas: 15
+
+volumes:
+  admin-data:
+  provider-cache:
+  provider-models:
+
+networks:
+  dicai-network:
+    driver: bridge
