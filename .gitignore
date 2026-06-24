@@ -1,0 +1,29 @@
+# Documentation (committed only with explicit permission)
+# NOTE: *.md is ignored - use git add -f README.md to commit
+.hermes/
+
+# Build artifacts
+/build/
+/target/
+/vendor/
+*.o
+*.so
+*.dll
+*.exe
+*.test
+*.out
+
+# Logs and temp files
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
