@@ -1,0 +1,21 @@
+version: '3.8'
+services:
+  provider:
+    build:
+      context: .
+      dockerfile: Dockerfile.provider
+    environment:
+      - ADMIN_URL=${ADMIN_URL:-http://localhost:8080}
+      - DEVICE_ID=${DEVICE_ID:-auto}
+      - MODEL_ID=${MODEL_ID:-}
+      - INVITE_TOKEN=${INVITE_TOKEN}
+    volumes:
+      - ./models:/app/models:rw
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    network_mode: host
