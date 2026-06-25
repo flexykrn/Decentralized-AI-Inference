@@ -197,6 +197,64 @@ async def start_inference_cluster(model_id: str):
     cluster["endpoint"] = f"http://localhost:9000/v1/chat/completions"
     models_db[model_id].status = "running"
     print(f"Cluster {model_id} running at {cluster['endpoint']}")
+    
+    # Start fault tolerance monitor
+    asyncio.create_task(monitor_provider_health(model_id))
+
+async def monitor_provider_health(model_id: str):
+    """Monitor provider health and reassign layers if provider drops out."""
+    cluster = clusters_db[model_id]
+    
+    while cluster["status"] == "running":
+        await asyncio.sleep(10)  # Check every 10 seconds
+        
+        # Find offline providers
+        offline_providers = []
+        for assignment in cluster.get("assignments", []):
+            provider_id = assignment["provider_id"]
+            if provider_id in providers_db:
+                provider = providers_db[provider_id]
+                if provider.status == "offline" or (time.time() - provider.last_seen > 30):
+                    offline_providers.append(provider_id)
+                    provider.status = "offline"
+        
+        if not offline_providers:
+            continue
+        
+        print(f"[Fault Tolerance] Detected {len(offline_providers)} offline providers: {offline_providers}")
+        
+        # Find standby providers (registered but not assigned)
+        assigned_ids = {a["provider_id"] for a in cluster["assignments"]}
+        standby = [p for pid, p in providers_db.items() 
+                   if pid not in assigned_ids and p.status in ("registered", "active", "ready")]
+        
+        if not standby:
+            print(f"[Fault Tolerance] No standby providers available. Cluster {model_id} degraded.")
+            continue
+        
+        # Reassign layers from offline providers to standby
+        for offline_id in offline_providers:
+            # Find the assignment for this provider
+            for assignment in cluster["assignments"]:
+                if assignment["provider_id"] == offline_id:
+                    layers = assignment["layers"]
+                    layer_count = assignment["layer_count"]
+                    
+                    # Find best standby provider
+                    best_standby = max(standby, key=lambda p: p.device_memory)
+                    
+                    # Reassign
+                    assignment["provider_id"] = best_standby.device_id
+                    print(f"[Fault Tolerance] Reassigned layers {layers[0]}-{layers[1]} from {offline_id} to {best_standby.device_id}")
+                    
+                    # Update provider status
+                    best_standby.status = "assigned"
+                    best_standby.assigned_model = model_id
+                    best_standby.layer_start = layers[0]
+                    best_standby.layer_end = layers[1]
+                    standby.remove(best_standby)
+                    
+                    break
 
 @app.get("/health")
 async def health():

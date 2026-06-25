@@ -26,7 +26,43 @@ def detect_hardware() -> dict:
     gpu_info = detect_gpu(result)
     result.update(gpu_info)
     
+    # Run benchmark if GPU detected (disabled by default - can be slow)
+    if result.get("compute_backend") in ("cuda", "metal") and os.environ.get("DICAI_BENCHMARK", "0") == "1":
+        try:
+            benchmark = run_gpu_benchmark()
+            result["compute_flops"] = benchmark.get("tflops", 0)
+            result["benchmark_score"] = benchmark.get("score", 0)
+        except Exception as e:
+            print(f"Benchmark failed: {e}")
+    
     return result
+
+def run_gpu_benchmark() -> dict:
+    """Run a quick GPU benchmark to measure TFLOPS."""
+    import numpy as np
+    
+    # Simple matrix multiplication benchmark
+    size = 4096
+    a = np.random.randn(size, size).astype(np.float32)
+    b = np.random.randn(size, size).astype(np.float32)
+    
+    # Warmup
+    np.dot(a, b)
+    
+    # Benchmark
+    start = time.time()
+    for _ in range(10):
+        np.dot(a, b)
+    elapsed = time.time() - start
+    
+    # Calculate TFLOPS
+    flops = 2 * size**3 * 10  # 2 * N^3 per multiply, 10 iterations
+    tflops = flops / (elapsed * 1e12)
+    
+    return {
+        "tflops": round(tflops, 2),
+        "score": round(tflops * 1000),  # Normalized score
+    }
 
 def detect_gpu(result) -> dict:
     # Try nvidia-smi first
