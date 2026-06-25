@@ -205,6 +205,64 @@ async def start_inference_cluster(model_id: str):
 async def health():
     return {"status": "ok", "service": "dicai-admin-v3"}
 
+@app.post("/api/v3/providers/{device_id}/heartbeat")
+async def provider_heartbeat(device_id: str):
+    """Receive heartbeat from provider."""
+    if device_id not in providers_db:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    
+    provider = providers_db[device_id]
+    provider.last_seen = time.time()
+    provider.status = "active"
+    
+    return {"status": "ok", "device_id": device_id}
+
+@app.get("/api/v3/providers")
+async def list_providers():
+    """List all registered providers with health status."""
+    now = time.time()
+    providers = []
+    
+    for pid, provider in providers_db.items():
+        # Mark as offline if no heartbeat in 30 seconds
+        if now - provider.last_seen > 30:
+            provider.status = "offline"
+        
+        providers.append({
+            "device_id": provider.device_id,
+            "device_memory": provider.device_memory,
+            "memory_type": provider.memory_type,
+            "compute_backend": provider.compute_backend,
+            "gpu_name": provider.gpu_name,
+            "os_type": provider.os_type,
+            "status": provider.status,
+            "last_seen": provider.last_seen,
+            "last_seen_ago": round(now - provider.last_seen, 1),
+        })
+    
+    return {"providers": providers, "count": len(providers)}
+
+@app.get("/api/v3/providers/{device_id}")
+async def get_provider(device_id: str):
+    """Get specific provider details."""
+    if device_id not in providers_db:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    
+    provider = providers_db[device_id]
+    now = time.time()
+    
+    return {
+        "device_id": provider.device_id,
+        "device_memory": provider.device_memory,
+        "memory_type": provider.memory_type,
+        "compute_backend": provider.compute_backend,
+        "gpu_name": provider.gpu_name,
+        "os_type": provider.os_type,
+        "status": provider.status,
+        "last_seen": provider.last_seen,
+        "last_seen_ago": round(now - provider.last_seen, 1),
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
