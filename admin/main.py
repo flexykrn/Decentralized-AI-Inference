@@ -9,6 +9,7 @@ from shared.models import Provider, ProviderRegisterRequest, ModelSpec
 from shared.constants import MODEL_METADATA
 from admin.calculator import calculate_model_memory
 from admin.matcher import match_providers_to_model
+from admin.token_store import TokenStore
 
 app = FastAPI(title="DiCAI Admin", version="3.0")
 
@@ -16,7 +17,7 @@ app = FastAPI(title="DiCAI Admin", version="3.0")
 models_db: Dict[str, ModelSpec] = {}
 providers_db: Dict[str, Provider] = {}
 clusters_db: Dict[str, dict] = {}
-invite_tokens: set = set()  # Admin-generated tokens
+token_store = TokenStore()
 
 # Admin endpoints (protected by secret)
 ADMIN_SECRET = os.environ.get("ADMIN_SECRET", "changeme")
@@ -28,7 +29,7 @@ async def generate_token(admin_secret: str = Header(...)):
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     
     token = secrets.token_urlsafe(32)
-    invite_tokens.add(token)
+    token_store.create(token)
     return {"token": token, "status": "active"}
 
 @app.get("/api/v3/admin/tokens")
@@ -37,7 +38,7 @@ async def list_tokens(admin_secret: str = Header(...)):
     if admin_secret != ADMIN_SECRET:
         raise HTTPException(status_code=403, detail="Invalid admin secret")
     
-    return {"tokens": list(invite_tokens), "count": len(invite_tokens)}
+    return {"tokens": token_store.list_active(), "count": len(token_store.list_active())}
 
 @app.post("/api/v3/models/{model_id}/deploy")
 async def deploy_model(model_id: str, precision: str = "bf16", context_length: int = 4096):
@@ -74,7 +75,7 @@ async def deploy_model(model_id: str, precision: str = "bf16", context_length: i
 @app.post("/api/v3/providers/register")
 async def register_provider(req: ProviderRegisterRequest):
     # Validate invite token
-    if req.invite_token not in invite_tokens:
+    if not token_store.validate(req.invite_token):
         raise HTTPException(status_code=403, detail="Invalid or expired invite token")
     
     provider = Provider(
@@ -157,8 +158,21 @@ async def start_cluster(model_id: str, background_tasks: BackgroundTasks):
 
 async def start_inference_cluster(model_id: str):
     """Start inference cluster with assigned providers."""
-    await asyncio.sleep(2)
     cluster = clusters_db[model_id]
+    assignments = cluster.get("assignments", [])
+    
+    # Try distributed-llama first, fallback to llama.cpp
+    try:
+        # TODO: Launch distributed-llama workers for each provider
+        # distributed-llama worker --model {model_id} --layers {start}-{end}
+        print(f"Starting distributed-llama cluster for {model_id}")
+        await asyncio.sleep(1)
+    except Exception as e:
+        print(f"distributed-llama failed: {e}, trying llama.cpp")
+        # TODO: Launch llama.cpp servers for each provider
+        # llama-cpp-python server --model {shard_path}
+        await asyncio.sleep(1)
+    
     cluster["status"] = "running"
     cluster["endpoint"] = f"http://localhost:9000/v1/chat/completions"
     models_db[model_id].status = "running"
