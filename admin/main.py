@@ -10,6 +10,7 @@ from shared.constants import MODEL_METADATA
 from admin.calculator import calculate_model_memory
 from admin.matcher import match_providers_to_model
 from admin.token_store import TokenStore
+from admin.model_downloader import model_downloader
 
 app = FastAPI(title="DiCAI Admin", version="3.0")
 
@@ -149,12 +150,34 @@ async def start_cluster(model_id: str, background_tasks: BackgroundTasks):
     cluster["status"] = "starting"
     background_tasks.add_task(start_inference_cluster, model_id)
     
+    # Trigger model download and shard creation
+    background_tasks.add_task(download_and_shard_model, model_id)
+    
     return {
         "model_id": model_id,
         "status": "starting",
         "providers": match["providers_used"],
         "assignments": match["assignments"],
     }
+
+async def download_and_shard_model(model_id: str):
+    """Download model and create shards for providers."""
+    cluster = clusters_db[model_id]
+    assignments = cluster.get("assignments", [])
+    
+    # Download model
+    success = model_downloader.download(model_id, cluster["precision"])
+    if not success:
+        print(f"Failed to download model {model_id}")
+        return
+    
+    # Create shards
+    shards = model_downloader.create_shards(model_id, assignments)
+    cluster["shards"] = shards
+    
+    print(f"Created {len(shards)} shards for {model_id}")
+    for shard in shards:
+        print(f"  Provider {shard['provider_id']}: layers {shard['layers'][0]}-{shard['layers'][1]}")
 
 async def start_inference_cluster(model_id: str):
     """Start inference cluster with assigned providers."""
