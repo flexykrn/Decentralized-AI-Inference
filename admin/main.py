@@ -184,17 +184,14 @@ async def start_inference_cluster(model_id: str):
     cluster = clusters_db[model_id]
     assignments = cluster.get("assignments", [])
     
-    # Try distributed-llama first, fallback to llama.cpp
-    try:
-        # TODO: Launch distributed-llama workers for each provider
-        # distributed-llama worker --model {model_id} --layers {start}-{end}
-        print(f"Starting distributed-llama cluster for {model_id}")
-        await asyncio.sleep(1)
-    except Exception as e:
-        print(f"distributed-llama failed: {e}, trying llama.cpp")
-        # TODO: Launch llama.cpp servers for each provider
-        # llama-cpp-python server --model {shard_path}
-        await asyncio.sleep(1)
+    # Update provider assignments
+    for assignment in assignments:
+        provider_id = assignment["provider_id"]
+        if provider_id in providers_db:
+            providers_db[provider_id].status = "assigned"
+            providers_db[provider_id].assigned_model = model_id
+            providers_db[provider_id].layer_start = assignment["layers"][0]
+            providers_db[provider_id].layer_end = assignment["layers"][1]
     
     cluster["status"] = "running"
     cluster["endpoint"] = f"http://localhost:9000/v1/chat/completions"

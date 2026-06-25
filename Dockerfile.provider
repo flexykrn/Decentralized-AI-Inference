@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-# Install system deps for hardware detection
+WORKDIR /app
+
+# Install system deps
 RUN apt-get update && apt-get install -y \
     curl \
     pciutils \
@@ -9,25 +11,16 @@ RUN apt-get update && apt-get install -y \
     cmake \
     && rm -rf /var/lib/apt/lists/*
 
-# Install distributed-llama
-RUN git clone https://github.com/b4rtaz/distributed-llama.git /tmp/distributed-llama && \
-    cd /tmp/distributed-llama && \
-    pip install -e . || true
-
-# Install llama.cpp Python bindings
-RUN pip install --no-cache-dir llama-cpp-python
-
-# Install PyTorch (CPU version by default, override for GPU)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-# Install transformers
-RUN pip install --no-cache-dir transformers
-
-WORKDIR /app
+# Install Python deps
 COPY provider/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy code
 COPY provider/ ./provider/
 COPY shared/ ./shared/
+COPY admin/ ./admin/
+
 ENV PYTHONPATH=/app
 
+# Run provider client
 CMD ["python", "provider/client.py"]

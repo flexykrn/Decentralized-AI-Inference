@@ -25,6 +25,9 @@ class Provider(BaseModel):
     cpu_cores: Optional[int] = None
     status: str = "registered"
     last_seen: float = 0.0
+    assigned_model: Optional[str] = None
+    layer_start: int = 0
+    layer_end: int = 0
 
 class ModelSpec(BaseModel):
     model_id: str
