@@ -3,3 +3,7 @@ uvicorn
 pydantic
 requests
 psutil
+grpcio
+protobuf
+numpy
+huggingface-hub

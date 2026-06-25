@@ -15,6 +15,14 @@ RUN apt-get update && apt-get install -y \
 COPY provider/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Build llama.cpp
+RUN git clone --depth 1 https://github.com/ggerganov/llama.cpp.git /tmp/llama.cpp && \
+    cd /tmp/llama.cpp && \
+    cmake -B build -DGGML_CUDA=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF && \
+    cmake --build build --config Release -j$(nproc) --target llama-server && \
+    cp build/bin/llama-server /usr/local/bin/ && \
+    rm -rf /tmp/llama.cpp
+
 # Copy code
 COPY provider/ ./provider/
 COPY shared/ ./shared/

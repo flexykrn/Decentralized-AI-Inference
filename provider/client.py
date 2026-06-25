@@ -68,16 +68,24 @@ def launch_exo_worker(model_id, layer_start, layer_end, port, device_id):
     return model_process
 
 def launch_llama_cpp_server(model_path, port, device_id):
-    """Fallback: Launch llama.cpp server for model shard."""
+    """Launch llama.cpp server for model shard."""
     global model_process
     
     print(f"[Provider {device_id}] Launching llama.cpp server...")
     
+    # Use system llama-server if available, otherwise use built one
+    llama_server = "/tmp/llama.cpp/build/bin/llama-server"
+    if not os.path.exists(llama_server):
+        # Try to find system-installed llama-server
+        import shutil
+        llama_server = shutil.which("llama-server") or "llama-server"
+    
     cmd = [
-        "python3", "-m", "llama_cpp.server",
+        llama_server,
         "--model", model_path,
         "--host", "0.0.0.0",
         "--port", str(port),
+        "--ctx-size", "4096",
     ]
     
     model_process = subprocess.Popen(
