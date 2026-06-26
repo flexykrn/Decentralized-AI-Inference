@@ -8,7 +8,8 @@ Stores K,V tensors per layer to avoid recomputation.
 
 import torch
 import torch.nn.functional as F
-from typing import Optional, Tuple, Dict
+from typing import Optional, Tuple, Dict, Any
+import numpy as np
 
 
 class KVCache:
@@ -77,6 +78,26 @@ class KVCache:
             "layers": len(self.k_cache),
             "seq_len": self.current_len
         }
+        
+    def serialize(self) -> Dict[str, Any]:
+        """Serialize cache to dict for network transfer."""
+        return {
+            'k': {str(k): v.detach().cpu().numpy().tolist() for k, v in self.k_cache.items()},
+            'v': {str(k): v.detach().cpu().numpy().tolist() for k, v in self.v_cache.items()},
+            'len': self.current_len
+        }
+        
+    @classmethod
+    def deserialize(cls, data: Dict[str, Any]) -> 'KVCache':
+        """Deserialize cache from dict."""
+        cache = cls()
+        cache.k_cache = {int(k): torch.tensor(v) for k, v in data.get('k', {}).items()}
+        cache.v_cache = {int(k): torch.tensor(v) for k, v in data.get('v', {}).items()}
+        cache.current_len = data.get('len', 0)
+        return cache
+        
+    def __repr__(self):
+        return f"KVCache(layers={len(self.k_cache)}, seq_len={self.current_len})"
 
 
 class KVCacheManager:

@@ -253,6 +253,8 @@ def create_app(provider: ShardProvider):
     class ProcessRequest(BaseModel):
         input_ids: Optional[List[int]] = None
         hidden_states: Optional[List[List[float]]] = None
+        kv_cache_state: Optional[dict] = None  # Serialized KV cache state
+        request_id: str = "default"
         
     @app.get("/health")
     def health():
@@ -261,9 +263,22 @@ def create_app(provider: ShardProvider):
     @app.post("/process")
     def process(req: ProcessRequest):
         try:
-            result = provider.process(req.input_ids, req.hidden_states)
+            # Load KV cache from request if provided
+            kv_cache = None
+            if req.kv_cache_state:
+                from shared.kv_cache import KVCache
+                kv_cache = KVCache.deserialize(req.kv_cache_state)
+            
+            result = provider.process(req.input_ids, req.hidden_states, kv_cache=kv_cache)
+            
+            # Serialize KV cache back to response
+            if kv_cache:
+                result['kv_cache_state'] = kv_cache.serialize()
+            
             return result
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
             
     @app.post("/load")
