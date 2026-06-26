@@ -51,8 +51,8 @@ class DistributedLayer(nn.Module):
         """Get weight from shard."""
         return weights.get(name)
         
-    def forward(self, x, mask=None):
-        """Forward pass with proper GQA attention."""
+    def forward(self, x, mask=None, kv_cache=None, layer_id=None):
+        """Forward pass with proper GQA attention and KV cache support."""
         residual = x
         batch_size, seq_len, hidden_dim = x.shape
         
@@ -70,19 +70,31 @@ class DistributedLayer(nn.Module):
             v = F.linear(x, self.attention_v) if self.attention_v is not None else q
             
             # GQA: Q has more heads than K/V
-            # Q shape: [batch, seq, hidden_dim] = [batch, seq, num_heads * head_dim]
-            # K/V shape: [batch, seq, head_dim] (shared across Q head groups)
             head_dim = k.shape[-1]  # 256 for TinyLlama
             num_heads = q.shape[-1] // head_dim  # 2048 / 256 = 8 heads
             
             # Reshape Q: [batch, seq, num_heads, head_dim] -> [batch, num_heads, seq, head_dim]
             q_reshaped = q.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
             
-            # Expand K,V to match Q's head count (GQA: shared across groups)
-            k_expanded = k.unsqueeze(1).expand(-1, num_heads, -1, -1)
-            v_expanded = v.unsqueeze(1).expand(-1, num_heads, -1, -1)
+            # Reshape K,V: [batch, seq, head_dim] -> [batch, 1, seq, head_dim]
+            k_reshaped = k.unsqueeze(1)
+            v_reshaped = v.unsqueeze(1)
             
-            # Attention scores: [batch, num_heads, seq, seq]
+            # Use KV cache if provided
+            if kv_cache is not None and layer_id is not None:
+                # Append new K,V to cache
+                kv_cache.append(layer_id, k_reshaped, v_reshaped)
+                # Get full cached K,V including previous tokens
+                k_cached, v_cached = kv_cache.get(layer_id)
+                if k_cached is not None:
+                    k_reshaped = k_cached
+                    v_reshaped = v_cached
+            
+            # Expand K,V to match Q's head count (GQA: shared across groups)
+            k_expanded = k_reshaped.expand(-1, num_heads, -1, -1)
+            v_expanded = v_reshaped.expand(-1, num_heads, -1, -1)
+            
+            # Attention scores: [batch, num_heads, seq, cache_len]
             scores = torch.matmul(q_reshaped, k_expanded.transpose(-2, -1)) / (head_dim ** 0.5)
             if mask is not None:
                 scores = scores.masked_fill(mask == 0, float('-inf'))
@@ -177,8 +189,8 @@ class ShardProvider:
         self.loaded = True
         print(f"[{self.provider_id}] Shard loaded successfully")
         
-    def process(self, input_ids: Optional[List[int]] = None, hidden_states: Optional[List[List[float]]] = None) -> dict:
-        """Process input through this provider's layers."""
+    def process(self, input_ids: Optional[List[int]] = None, hidden_states: Optional[List[List[float]]] = None, kv_cache=None) -> dict:
+        """Process input through this provider's layers with KV cache support."""
         if not self.loaded:
             raise RuntimeError("Shard not loaded")
             
@@ -197,11 +209,11 @@ class ShardProvider:
             
         print(f"[{self.provider_id}] Processing input shape: {x.shape}")
         
-        # Run through layers
+        # Run through layers with KV cache
         for layer_num in range(self.start_layer, self.end_layer + 1):
             layer_key = str(layer_num)
             if layer_key in self.layers:
-                x = self.layers[layer_key](x)
+                x = self.layers[layer_key](x, kv_cache=kv_cache, layer_id=layer_num)
                 print(f"[{self.provider_id}] Layer {layer_num} output shape: {x.shape}")
                 
         # Apply output norm if present
