@@ -1,0 +1,44 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    torch \
+    safetensors \
+    grpcio \
+    grpcio-tools \
+    protobuf \
+    psutil \
+    numpy \
+    fastapi \
+    uvicorn \
+    gguf
+
+# Copy proto files
+COPY proto/ ./proto/
+
+# Generate gRPC code
+RUN python3 -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. proto/dicai.proto
+
+# Copy admin code
+COPY coordinator/ ./coordinator/
+COPY tools/ ./tools/
+COPY shared/ ./shared/
+
+# Expose HTTP port for OpenAI-compatible API
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# Default command
+CMD ["python3", "coordinator/shard_coordinator.py"]
