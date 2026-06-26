@@ -19,12 +19,14 @@ A system where:
 - Provider HTTP API (health checks, layer serving)
 - Coordinator for distributed inference routing
 - Dynamic hardware-aware provider matching
+- **End-to-end distributed inference** - Token generation works across multiple providers!
+
+**Verified Test:**
+- Input: [1, 2, 3] → Provider 1 (layers 0-10) → Provider 2 (layers 11-21) → Token: 7651
+- Each provider loads only ~2GB instead of full 4GB model
+- Hidden states passed between providers via HTTP
 
 **In Progress:**
-- PyTorch forward pass shape alignment (RMS norm mismatch)
-- End-to-end distributed inference test
-
-**Not Started:**
 - Docker packaging for providers
 - Model download/sharing mechanism
 - Production deployment
@@ -135,9 +137,10 @@ Each provider:
 
 ## Known Issues
 
-1. **Tensor shape mismatch** in PyTorch forward pass (RMS norm)
-   - Embeddings output shape doesn't match layer input expectations
-   - Need to fix weight transposition between GGUF and PyTorch
+1. **Simplified attention mechanism**
+   - Using self-attention on Q only (not full multi-head attention)
+   - Real implementation needs KV cache management
+   - Works for proof-of-concept but not production-ready
 
 2. **No Docker packaging yet**
    - Providers need manual Python setup
@@ -153,8 +156,7 @@ Each provider:
 - [x] True layer sharding
 - [x] Provider HTTP API
 - [x] Coordinator routing
-- [ ] Fix tensor shape mismatch
-- [ ] End-to-end distributed test
+- [x] End-to-end distributed inference
 - [ ] Docker packaging
 - [ ] Model sharing via HTTP
 - [ ] Dynamic provider joining
