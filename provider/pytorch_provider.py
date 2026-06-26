@@ -51,8 +51,8 @@ class DistributedLayer(nn.Module):
         """Get weight from shard."""
         return weights.get(name)
         
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """Forward pass through this layer."""
+    def forward(self, x, mask=None):
+        """Forward pass with proper GQA attention."""
         residual = x
         batch_size, seq_len, hidden_dim = x.shape
         
@@ -60,23 +60,41 @@ class DistributedLayer(nn.Module):
         if self.attention_norm is not None:
             x = F.rms_norm(x, [hidden_dim], self.attention_norm, eps=1e-5)
             
-        # Attention
-        # Attention
+        # Attention with GQA (Grouped Query Attention)
         if self.attention_q is not None:
-            # Q, K, V projections
-            # For GGUF, weights are already in correct format [out_features, in_features]
-            q = F.linear(x, self.attention_q)  # [batch, seq, hidden_dim]
+            # Q projection: [batch, seq, hidden_dim]
+            q = F.linear(x, self.attention_q)
             
-            # For simplicity, use self-attention on Q only
-            # In real implementation, we'd need proper multi-head attention with KV cache
-            head_dim = q.shape[-1]
-            scores = torch.matmul(q, q.transpose(-2, -1)) / (head_dim ** 0.5)
+            # K, V projections: [batch, seq, head_dim] (smaller than Q)
+            k = F.linear(x, self.attention_k) if self.attention_k is not None else q
+            v = F.linear(x, self.attention_v) if self.attention_v is not None else q
+            
+            # GQA: Q has more heads than K/V
+            # Q shape: [batch, seq, hidden_dim] = [batch, seq, num_heads * head_dim]
+            # K/V shape: [batch, seq, head_dim] (shared across Q head groups)
+            head_dim = k.shape[-1]  # 256 for TinyLlama
+            num_heads = q.shape[-1] // head_dim  # 2048 / 256 = 8 heads
+            
+            # Reshape Q: [batch, seq, num_heads, head_dim] -> [batch, num_heads, seq, head_dim]
+            q_reshaped = q.view(batch_size, seq_len, num_heads, head_dim).transpose(1, 2)
+            
+            # Expand K,V to match Q's head count (GQA: shared across groups)
+            k_expanded = k.unsqueeze(1).expand(-1, num_heads, -1, -1)
+            v_expanded = v.unsqueeze(1).expand(-1, num_heads, -1, -1)
+            
+            # Attention scores: [batch, num_heads, seq, seq]
+            scores = torch.matmul(q_reshaped, k_expanded.transpose(-2, -1)) / (head_dim ** 0.5)
             if mask is not None:
                 scores = scores.masked_fill(mask == 0, float('-inf'))
             attn_weights = F.softmax(scores, dim=-1)
-            attn_output = torch.matmul(attn_weights, q)
             
-            # Project back to hidden dimension
+            # Apply attention to values
+            attn_output = torch.matmul(attn_weights, v_expanded)
+            
+            # Reshape back: [batch, num_heads, seq, head_dim] -> [batch, seq, hidden_dim]
+            attn_output = attn_output.transpose(1, 2).contiguous().view(batch_size, seq_len, hidden_dim)
+            
+            # Output projection
             if self.attention_o is not None:
                 attn_output = F.linear(attn_output, self.attention_o)
                 
