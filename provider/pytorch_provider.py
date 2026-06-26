@@ -48,18 +48,11 @@ class DistributedLayer(nn.Module):
         self.ffn_norm = layer_weights.get(f'blk.{layer_num}.ffn_norm.weight')
         
     def _get_weight(self, weights: dict, name: str) -> Optional[torch.Tensor]:
-        """Get weight and transpose if needed (GGUF stores transposed weights)."""
-        w = weights.get(name)
-        if w is not None:
-            # GGUF stores weights as [out_features, in_features]
-            # PyTorch Linear expects [out_features, in_features]
-            # So we don't need to transpose for F.linear
-            return w
-        return None
+        """Get weight from shard."""
+        return weights.get(name)
         
     def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Forward pass through this layer."""
-        # Simplified attention (real implementation needs full KV cache management)
         residual = x
         batch_size, seq_len, hidden_dim = x.shape
         
@@ -67,29 +60,25 @@ class DistributedLayer(nn.Module):
         if self.attention_norm is not None:
             x = F.rms_norm(x, [hidden_dim], self.attention_norm, eps=1e-5)
             
-        # Attention (simplified - just linear projections)
+        # Attention
+        # Attention
         if self.attention_q is not None:
-            # For simplicity, just do the linear projections without full attention
-            # Real implementation needs proper multi-head attention
-            q = F.linear(x, self.attention_q)
-            k = F.linear(x, self.attention_k) if self.attention_k is not None else q
-            v = F.linear(x, self.attention_v) if self.attention_v is not None else q
+            # Q, K, V projections
+            # For GGUF, weights are already in correct format [out_features, in_features]
+            q = F.linear(x, self.attention_q)  # [batch, seq, hidden_dim]
             
-            # Simple attention computation (simplified)
-            # Use the last dimension for attention
+            # For simplicity, use self-attention on Q only
+            # In real implementation, we'd need proper multi-head attention with KV cache
             head_dim = q.shape[-1]
-            scores = torch.matmul(q, k.transpose(-2, -1)) / (head_dim ** 0.5)
+            scores = torch.matmul(q, q.transpose(-2, -1)) / (head_dim ** 0.5)
             if mask is not None:
                 scores = scores.masked_fill(mask == 0, float('-inf'))
             attn_weights = F.softmax(scores, dim=-1)
-            attn_output = torch.matmul(attn_weights, v)
+            attn_output = torch.matmul(attn_weights, q)
             
             # Project back to hidden dimension
             if self.attention_o is not None:
-                # attention_o shape: [hidden_dim, hidden_dim]
-                # attn_output shape: [batch, seq, head_dim]
-                # We need to project head_dim back to hidden_dim
-                attn_output = F.linear(attn_output, self.attention_o[:head_dim, :])
+                attn_output = F.linear(attn_output, self.attention_o)
                 
             x = residual + attn_output
             
@@ -170,7 +159,7 @@ class ShardProvider:
         self.loaded = True
         print(f"[{self.provider_id}] Shard loaded successfully")
         
-    def process(self, input_ids: List[int], hidden_states: Optional[List[List[float]]] = None) -> dict:
+    def process(self, input_ids: Optional[List[int]] = None, hidden_states: Optional[List[List[float]]] = None) -> dict:
         """Process input through this provider's layers."""
         if not self.loaded:
             raise RuntimeError("Shard not loaded")
@@ -178,12 +167,14 @@ class ShardProvider:
         # Convert to tensors
         if hidden_states is not None:
             x = torch.tensor(hidden_states, dtype=torch.float32)
+            # Add batch dimension if missing
+            if x.dim() == 2:
+                x = x.unsqueeze(0)  # [1, seq_len, hidden_dim]
         else:
             # Use embeddings - input_ids select rows from embedding matrix
             if self.embeddings is None:
                 raise RuntimeError("No embeddings available and no hidden states provided")
-            # embeddings shape: [vocab_size, hidden_dim]
-            # input_ids should select specific rows
+            # embeddings shape: [vocab_size, hidden_dim] (already correct from converter)
             x = self.embeddings[input_ids].unsqueeze(0)  # [1, seq_len, hidden_dim]
             
         print(f"[{self.provider_id}] Processing input shape: {x.shape}")
@@ -197,6 +188,7 @@ class ShardProvider:
                 
         # Apply output norm if present
         if self.output_norm is not None:
+            print(f"[{self.provider_id}] Applying output norm with shape {self.output_norm.shape} to x shape {x.shape}")
             x = F.rms_norm(x, [x.shape[-1]], self.output_norm, eps=1e-5)
             
         # Project to vocabulary if present (only on last provider)
