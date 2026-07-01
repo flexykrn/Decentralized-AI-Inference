@@ -81,21 +81,22 @@ class ProviderService:
     """Provider daemon that serves inference requests."""
     
     def __init__(self, provider_id: str, coordinator_url: str, layer_server_url: str,
-                 port: int = 5001, host: str = "0.0.0.0"):
+                 port: int = 5001, host: str = "0.0.0.0", invite_code: str = ""):
         self.provider_id = provider_id
         self.coordinator_url = coordinator_url.rstrip("/")
         self.layer_server_url = layer_server_url.rstrip("/")
         self.port = port
         self.host = host
-        
+        self.invite_code = invite_code or os.environ.get("DICAI_PROVIDER_CODE", "")
+
         self.hardware = HardwareDetector.detect()
         self.capacity_score = HardwareDetector.calculate_capacity_score(self.hardware)
-        
+
         self.dht_client = DHTClient(
             coordinator_url.replace("http://", "").replace("https://", "").split(":")[0],
             int(coordinator_url.split(":")[-1].split("/")[0]) if ":" in coordinator_url else 8464
         )
-        
+
         self.layer_downloader = LayerDownloader(layer_server_url, cache_dir=f"cache/{provider_id}")
         self.peer_discovery = PeerDiscovery(self.dht_client)
         
@@ -246,8 +247,17 @@ class ProviderService:
         )
         
         try:
-            result = self.dht_client.register(provider)
-            print(f"[Provider {self.provider_id}] Registered with coordinator: {result}")
+            # Use HTTP coordinator registration with invite code
+            resp = requests.post(
+                f"{self.coordinator_url}/register",
+                json={"code": self.invite_code, "provider": provider.to_dict()},
+                timeout=10
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                print(f"[Provider {self.provider_id}] Registered with coordinator: {result}")
+            else:
+                print(f"[Provider {self.provider_id}] Registration failed: {resp.status_code} {resp.text}")
         except Exception as e:
             print(f"[Provider {self.provider_id}] Failed to register: {e}")
             
@@ -393,15 +403,17 @@ def main():
     parser.add_argument("--layer-server", default="http://localhost:9000", help="Layer server URL")
     parser.add_argument("--port", type=int, default=5001, help="Provider port")
     parser.add_argument("--host", default="0.0.0.0", help="Provider host")
-    
+    parser.add_argument("--code", default="", help="Invite code for coordinator registration")
+
     args = parser.parse_args()
-    
+
     service = ProviderService(
         provider_id=args.id,
         coordinator_url=args.coordinator,
         layer_server_url=args.layer_server,
         port=args.port,
-        host=args.host
+        host=args.host,
+        invite_code=args.code
     )
     
     try:

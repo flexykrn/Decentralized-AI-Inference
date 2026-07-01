@@ -27,6 +27,45 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.dht.discovery import DHTNode, DHTClient, ProviderInfo
 
 
+class InviteCodeManager:
+    """Manages invite codes for provider registration."""
+
+    def __init__(self, codes_file: str = ".provider_codes.json"):
+        self.codes_file = codes_file
+        self.codes: Dict[str, dict] = {}
+        self._load()
+
+    def _load(self):
+        if os.path.exists(self.codes_file):
+            with open(self.codes_file, 'r') as f:
+                self.codes = json.load(f)
+
+    def _save(self):
+        with open(self.codes_file, 'w') as f:
+            json.dump(self.codes, f, indent=2)
+
+    def create_code(self) -> str:
+        import secrets
+        code = "dicai_" + secrets.token_urlsafe(32)
+        self.codes[code] = {"created_at": time.time(), "used_by": None}
+        self._save()
+        return code
+
+    def validate_code(self, code: str) -> bool:
+        if not code or code not in self.codes:
+            return False
+        return self.codes[code].get("used_by") is None
+
+    def mark_code_used(self, code: str, provider_id: str):
+        if code in self.codes:
+            self.codes[code]["used_by"] = provider_id
+            self.codes[code]["used_at"] = time.time()
+            self._save()
+
+    def list_codes(self) -> Dict[str, dict]:
+        return self.codes
+
+
 @dataclass
 class LayerAssignment:
     """Layer assignment for a provider."""
@@ -43,6 +82,7 @@ class Coordinator:
         self.port = port
         self.host = host
         self.dht = DHTNode("coordinator", host=host, port=port)
+        self.auth = InviteCodeManager()
         
         self.assignments: Dict[str, LayerAssignment] = {}
         self.assignment_version = 0
@@ -96,6 +136,43 @@ class Coordinator:
             self._rebalance_all()
             return {"status": "rebalanced", "version": self.assignment_version}
             
+        @self.app.post("/register")
+        async def register_provider(request: Dict):
+            """Register a provider with invite code."""
+            code = request.get("code") or ""
+            provider_data = request.get("provider", {})
+
+            if not self.auth.validate_code(code):
+                raise HTTPException(status_code=403, detail="Invalid or used invite code")
+
+            try:
+                provider = ProviderInfo.from_dict(provider_data)
+                with self.dht.lock:
+                    self.dht.providers[provider.provider_id] = provider
+                self.auth.mark_code_used(code, provider.provider_id)
+                return {"status": "registered", "provider_id": provider.provider_id}
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        @self.app.post("/code")
+        async def generate_code(request: Dict):
+            """Generate a new invite code (admin only)."""
+            admin_secret = request.get("admin_secret")
+            if admin_secret != os.environ.get("DICAI_ADMIN_SECRET", "admin"):
+                raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+            code = self.auth.create_code()
+            return {"code": code}
+
+        @self.app.get("/codes")
+        async def list_codes(request: Dict):
+            """List invite codes (admin only)."""
+            admin_secret = request.get("admin_secret")
+            if admin_secret != os.environ.get("DICAI_ADMIN_SECRET", "admin"):
+                raise HTTPException(status_code=401, detail="Invalid admin secret")
+
+            return {"codes": self.auth.list_codes()}
+
         @self.app.get("/health")
         async def health():
             """Health check."""
