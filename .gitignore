@@ -27,5 +27,8 @@ Thumbs.db
 *.swo
 *~
 __pycache__/
-models/*.gguf
+models/
+layers/
+cache/
+test_layers/
 .research/

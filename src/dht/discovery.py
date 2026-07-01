@@ -223,6 +223,11 @@ class DHTNode:
             
         return route
         
+    def list_providers(self) -> List[ProviderInfo]:
+        """List all healthy providers."""
+        with self.lock:
+            return [p for p in self.providers.values() if p.is_healthy]
+
     def cleanup_stale_providers(self, max_age: int = 60):
         """Remove providers that haven't heartbeated recently."""
         now = time.time()

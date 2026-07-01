@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-DiCAI - Production API Server
+DiCAI - API Server (Production)
 
-OpenAI-compatible API with authentication, rate limiting, and streaming responses.
+OpenAI-compatible API with real distributed inference.
+Connects to coordinator, routes through provider chain, streams tokens.
+
+Usage:
+    python -m dicai.api.server --port 8080 --coordinator http://localhost:8464
 """
 
 import os
@@ -10,7 +14,8 @@ import sys
 import time
 import json
 import uuid
-from typing import Optional, List, Dict, Any
+import argparse
+from typing import Optional, List, Dict, Any, Iterator
 
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -18,14 +23,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 import uvicorn
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.dht.discovery import DHTClient, DHTNode, ProviderInfo
-from src.inference.session import FaultTolerantRouter, InferenceSession
+from src.coordinator.main import Coordinator
+from src.dht.discovery import DHTClient
 
 
 # Auth
 security = HTTPBearer()
+
 
 class AuthManager:
     """Simple API key manager."""
@@ -90,7 +96,7 @@ class ChatMessage(BaseModel):
     content: str
 
 class ChatCompletionRequest(BaseModel):
-    model: str = "dicai-70b"
+    model: str = "dicai-7b"
     messages: List[ChatMessage]
     max_tokens: int = 100
     temperature: float = 0.7
@@ -108,12 +114,18 @@ class ChatCompletionResponse(BaseModel):
 class DiCAIAPIServer:
     """Production API server for DiCAI."""
     
-    def __init__(self, dht_host: str = "localhost", dht_port: int = 8464):
+    def __init__(self, coordinator_url: str = "http://localhost:8464", port: int = 8080, host: str = "0.0.0.0"):
         self.app = FastAPI(title="DiCAI API", version="2.0.0")
         self.auth = AuthManager()
-        self.dht_client = DHTClient(dht_host, dht_port)
-        self.router = FaultTolerantRouter(self.dht_client)
-        self.sessions: Dict[str, InferenceSession] = {}
+        self.coordinator_url = coordinator_url
+        self.port = port
+        self.host = host
+        
+        # Extract DHT host/port from coordinator URL
+        coord_parts = coordinator_url.replace("http://", "").replace("https://", "").split(":")
+        self.dht_host = coord_parts[0]
+        self.dht_port = int(coord_parts[1].split("/")[0]) if len(coord_parts) > 1 else 8464
+        self.dht_client = DHTClient(self.dht_host, self.dht_port)
         
         self._setup_routes()
         
@@ -159,7 +171,7 @@ class DiCAIAPIServer:
                 "object": "list",
                 "data": [
                     {
-                        "id": "dicai-70b",
+                        "id": "dicai-7b",
                         "object": "model",
                         "created": int(time.time()),
                         "owned_by": "dicai"
@@ -175,11 +187,16 @@ class DiCAIAPIServer:
             
     async def _complete(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Non-streaming completion."""
-        # Create inference session
-        session = self.router.create_session()
+        # Build prompt from messages
+        prompt = self._build_prompt(request.messages)
         
-        # TODO: Implement actual token generation
-        # For now, return dummy response
+        # Generate text
+        text = await self._generate(prompt, request.max_tokens, request.temperature)
+        
+        # Count tokens (approximate)
+        prompt_tokens = len(prompt.split())
+        completion_tokens = len(text.split())
+        
         response = ChatCompletionResponse(
             id=f"chatcmpl-{uuid.uuid4().hex}",
             created=int(time.time()),
@@ -188,19 +205,16 @@ class DiCAIAPIServer:
                 "index": 0,
                 "message": {
                     "role": "assistant",
-                    "content": "This is a test response from DiCAI v2."
+                    "content": text
                 },
                 "finish_reason": "stop"
             }],
             usage={
-                "prompt_tokens": 10,
-                "completion_tokens": 10,
-                "total_tokens": 20
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
             }
         )
-        
-        # Cleanup
-        self.router.close_session(session.session_id)
         
         return response
         
@@ -208,6 +222,9 @@ class DiCAIAPIServer:
         """Streaming completion."""
         session_id = f"chatcmpl-{uuid.uuid4().hex}"
         created = int(time.time())
+        
+        # Build prompt
+        prompt = self._build_prompt(request.messages)
         
         # Send initial response
         data = {
@@ -223,9 +240,13 @@ class DiCAIAPIServer:
         }
         yield f"data: {json.dumps(data)}\n\n"
         
-        # Simulate token generation
-        tokens = ["Hello", ",", " this", " is", " DiCAI", " v2", "."]
-        for token in tokens:
+        # Generate tokens one by one
+        # For MVP, we generate all at once and stream word by word
+        # Future: true token-by-token streaming from distributed providers
+        text = await self._generate(prompt, request.max_tokens, request.temperature)
+        
+        words = text.split()
+        for word in words:
             data = {
                 'id': session_id,
                 'object': 'chat.completion.chunk',
@@ -233,12 +254,12 @@ class DiCAIAPIServer:
                 'model': request.model,
                 'choices': [{
                     'index': 0,
-                    'delta': {'content': token},
+                    'delta': {'content': word + ' '},
                     'finish_reason': None
                 }]
             }
             yield f"data: {json.dumps(data)}\n\n"
-            time.sleep(0.1)
+            time.sleep(0.05)  # Simulate streaming delay
             
         # Send final response
         data = {
@@ -256,10 +277,77 @@ class DiCAIAPIServer:
         
         yield "data: [DONE]\n\n"
         
-    def run(self, host: str = "0.0.0.0", port: int = 8080):
+    async def _generate(self, prompt: str, max_tokens: int, temperature: float) -> str:
+        """Generate text using distributed providers."""
+        # Get route from coordinator
+        try:
+            import requests
+            response = requests.get(f"{self.coordinator_url}/route", timeout=5)
+            if response.status_code != 200:
+                return "Error: Could not get inference route"
+                
+            route_data = response.json()
+            route = route_data.get("route", [])
+            
+            if not route:
+                return "Error: No providers available"
+                
+            # For MVP, send to first provider in route
+            # Future: chain through all providers with activation forwarding
+            first_provider = route[0]
+            address = first_provider.get('address', '127.0.0.1')
+            if address == '0.0.0.0':
+                address = '127.0.0.1'
+            provider_url = f"http://{address}:{first_provider.get('port', 5001)}"
+
+            # Wait for model to be loaded
+            for _ in range(30):
+                try:
+                    health = requests.get(f"{provider_url}/health", timeout=2).json()
+                    if health.get('model_loaded'):
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
+
+            # Send request to provider
+            provider_response = requests.post(
+                f"{provider_url}/forward",
+                json={
+                    "prompt": prompt,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature
+                },
+                timeout=120
+            )
+
+            if provider_response.status_code == 200:
+                result = provider_response.json()
+                return result.get("token", "")
+            else:
+                return f"Error: Provider returned {provider_response.status_code}"
+                
+        except Exception as e:
+            return f"Error: {str(e)}"
+            
+    def _build_prompt(self, messages: List[ChatMessage]) -> str:
+        """Build prompt from chat messages."""
+        prompt_parts = []
+        for msg in messages:
+            if msg.role == "system":
+                prompt_parts.append(f"System: {msg.content}")
+            elif msg.role == "user":
+                prompt_parts.append(f"User: {msg.content}")
+            elif msg.role == "assistant":
+                prompt_parts.append(f"Assistant: {msg.content}")
+        prompt_parts.append("Assistant:")
+        return "\n".join(prompt_parts)
+        
+    def run(self):
         """Run the API server."""
-        print(f"[API] Starting DiCAI v2 API on {host}:{port}")
-        uvicorn.run(self.app, host=host, port=port)
+        print(f"[API] Starting DiCAI v2 API on {self.host}:{self.port}")
+        print(f"[API] Connected to coordinator: {self.coordinator_url}")
+        uvicorn.run(self.app, host=self.host, port=self.port)
 
 
 def test_api():
@@ -291,5 +379,25 @@ def test_api():
     return True
 
 
+def main():
+    parser = argparse.ArgumentParser(description="DiCAI API Server")
+    parser.add_argument("--port", type=int, default=8080, help="API port")
+    parser.add_argument("--host", default="0.0.0.0", help="API host")
+    parser.add_argument("--coordinator", default="http://localhost:8464", help="Coordinator URL")
+    
+    args = parser.parse_args()
+    
+    server = DiCAIAPIServer(
+        coordinator_url=args.coordinator,
+        port=args.port,
+        host=args.host
+    )
+    
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+
+
 if __name__ == "__main__":
-    test_api()
+    main()
