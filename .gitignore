@@ -34,3 +34,4 @@ test_layers/
 .research/
 .api_keys.json
 .provider_codes.json
+.env
