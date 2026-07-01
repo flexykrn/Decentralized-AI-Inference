@@ -35,3 +35,8 @@ test_layers/
 .api_keys.json
 .provider_codes.json
 .env
+cache_pt/
+layers_gpt2/
+models/hf_gpt2/
+models/hf_tinyllama/
+test_cache/
