@@ -130,6 +130,16 @@ class ProviderService:
                 "model_loaded": self.model is not None
             }
 
+        @self.app.get("/ready")
+        async def ready():
+            """Readiness probe: true only when model is loaded and provider is running."""
+            return {
+                "provider_id": self.provider_id,
+                "ready": self.running and self.model is not None,
+                "model_loaded": self.model is not None,
+                "assigned_layers": list(self.assigned_layers)
+            }
+
         @self.app.get("/status")
         async def status():
             """Detailed bootstrap status."""
@@ -174,18 +184,19 @@ class ProviderService:
                 
             response = self.model(
                 prompt,
-                max_tokens=1,
+                max_tokens=request.get("max_tokens", 20),
                 temperature=request.get("temperature", 0.7),
                 stop=["</s>"],
             )
             
             # Handle llama.cpp response format
-            token = ""
+            text = ""
             if isinstance(response, dict) and 'choices' in response:
-                token = response['choices'][0].get('text', '')
+                text = response['choices'][0].get('text', '')
             
             return {
-                "token": token,
+                "text": text,
+                "token": text.split()[0] if text.split() else "",
                 "provider_id": self.provider_id,
                 "layers_processed": self.assigned_layers,
             }

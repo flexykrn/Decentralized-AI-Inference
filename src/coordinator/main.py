@@ -98,12 +98,25 @@ class Coordinator:
             
         @self.app.get("/health")
         async def health():
-            """Coordinator health."""
+            """Health check."""
             return {
                 "status": "healthy",
                 "providers": len(self.dht.providers),
                 "assignments": len(self.assignments),
                 "version": self.assignment_version
+            }
+
+        @self.app.get("/status")
+        async def status():
+            """Detailed coordinator status."""
+            route = self._build_route()
+            return {
+                "status": "healthy",
+                "providers": len(self.dht.providers),
+                "assignments": [asdict(a) for a in self.assignments.values()],
+                "route": [asdict(a) for a in route],
+                "version": self.assignment_version,
+                "total_layers": self.total_layers
             }
             
     def _calculate_assignment(self, provider_id: str, capacity_score: float) -> LayerAssignment:

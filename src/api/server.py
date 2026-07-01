@@ -301,7 +301,7 @@ class DiCAIAPIServer:
             provider_url = f"http://{address}:{first_provider.get('port', 5001)}"
 
             # Wait for model to be loaded
-            for _ in range(30):
+            for _ in range(60):
                 try:
                     health = requests.get(f"{provider_url}/health", timeout=2).json()
                     if health.get('model_loaded'):
@@ -309,6 +309,8 @@ class DiCAIAPIServer:
                 except Exception:
                     pass
                 time.sleep(1)
+            else:
+                return "Error: Provider model not loaded after 60s"
 
             # Send request to provider
             provider_response = requests.post(
@@ -323,7 +325,7 @@ class DiCAIAPIServer:
 
             if provider_response.status_code == 200:
                 result = provider_response.json()
-                return result.get("token", "")
+                return result.get("text", result.get("token", ""))
             else:
                 return f"Error: Provider returned {provider_response.status_code}"
                 
